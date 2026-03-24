@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Smart Glass Gesture Demo</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; text-align: center; background: #2c3e50; color: white; padding: 40px; }
+        .card { background: #34495e; padding: 30px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); display: inline-block; min-width: 450px; }
+        #status { font-size: 1.1em; color: #bdc3c7; }
+        
+        .image-container { margin: 20px 0; height: 200px; display: flex; align-items: center; justify-content: center; }
+        #gestureImg { max-height: 100%; border-radius: 10px; display: none; }
+
+        #result { font-size: 5em; font-weight: bold; color: #1abc9c; margin: 0; }
+        #score { font-size: 1.5em; color: #f1c40f; margin-bottom: 20px; }
+        
+        .controls { display: flex; justify-content: center; gap: 10px; margin-bottom: 20px; }
+        button { padding: 12px 24px; font-size: 1em; cursor: pointer; border: none; border-radius: 8px; font-weight: bold; transition: 0.3s; }
+        .btn-connect { background: #3498db; color: white; width: 100%; margin-bottom: 20px; font-size: 1.2em; }
+        .btn-start { background: #2ecc71; color: white; }
+        .btn-stop { background: #e74c3c; color: white; }
+        
+        /* Power OFFボタン専用スタイル */
+        .btn-power { background: #95a5a6; color: #2c3e50; width: 100%; border: 2px solid #7f8c8d; }
+        .btn-power:hover { background: #c0392b; color: white; }
+
+        button:hover { transform: translateY(-2px); }
+        button:disabled { background: #7f8c8d; cursor: not-allowed; opacity: 0.5; }
+
+        hr { border: 0; border-top: 1px solid #5d6d7e; margin: 20px 0; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h1>Gesture Monitor</h1>
+    <button class="btn-connect" id="connectBtn" onclick="connectBLE()">1. Connect to Sensor</button>
+    <p id="status">Status: Disconnected</p>
+    
+    <div class="image-container">
+        <img id="gestureImg" src="" alt="Gesture Image">
+    </div>
+
+    <div id="result">READY</div>
+    <div id="score">Score: 0.00</div>
+
+    <div class="controls">
+        <button class="btn-start" id="startBtn" onclick="sendCommand(1)" disabled>2. START Recognition</button>
+        <button class="btn-stop" id="stopBtn" onclick="sendCommand(0)" disabled>PAUSE</button>
+    </div>
+
+    <hr>
+    <button class="btn-power" id="powerBtn" onclick="powerOff()" disabled>SYSTEM POWER OFF</button>
+</div>
+
+<script>
+    const SERVICE_UUID = "8f460216-0158-453c-9774-65158a1f8796";
+    const GESTURE_CHAR_UUID = "8f460217-0158-453c-9774-65158a1f8796";
+    const CONTROL_CHAR_UUID = "8f460218-0158-453c-9774-65158a1f8796";
+    const POWER_CHAR_UUID = "8f460219-0158-453c-9774-65158a1f8796"; // 追加したUUID
+
+    let controlChar;
+    let powerChar;
+
+    async function connectBLE() {
+        try {
+            const device = await navigator.bluetooth.requestDevice({
+                filters: [{ services: [SERVICE_UUID] }]
+            });
+            const server = await device.gatt.connect();
+            const service = await server.getPrimaryService(SERVICE_UUID);
+            
+            const gestureChar = await service.getCharacteristic(GESTURE_CHAR_UUID);
+            controlChar = await service.getCharacteristic(CONTROL_CHAR_UUID);
+            powerChar = await service.getCharacteristic(POWER_CHAR_UUID); // 電源用を取得
+
+            document.getElementById('status').innerText = "Status: Connected!";
+            document.getElementById('connectBtn').disabled = true;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = false;
+            document.getElementById('powerBtn').disabled = false; // ボタン有効化
+
+            gestureChar.startNotifications();
+            gestureChar.addEventListener('characteristicvaluechanged', (event) => {
+                const value = new TextDecoder().decode(event.target.value);
+                const [label, score] = value.split(':');
+                updateUI(label.trim(), score);
+            });
+            
+            device.addEventListener('gattserverdisconnected', () => { location.reload(); });
+
+        } catch (error) {
+            console.error(error);
+            alert("Connection failed: " + error);
+        }
+    }
+
+    function updateUI(label, score) {
+        const resultEl = document.getElementById('result');
+        const imgEl = document.getElementById('gestureImg');
+        
+        resultEl.innerText = label.toUpperCase();
+        document.getElementById('score').innerText = "Score: " + score;
+
+        const imgPath = label.toLowerCase() + ".png";
+        imgEl.src = imgPath;
+        imgEl.style.display = "block";
+        imgEl.onerror = () => { imgEl.style.display = "none"; };
+    }
+
+    async function sendCommand(value) {
+        if (!controlChar) return;
+        try {
+            const data = new Uint8Array([value]);
+            await controlChar.writeValue(data);
+            if(value === 0) {
+                document.getElementById('result').innerText = "PAUSED";
+                document.getElementById('gestureImg').style.display = "none";
+            }
+        } catch (error) {
+            console.error("Write failed: " + error);
+        }
+    }
+
+    // 電源OFF命令の送信
+    async function powerOff() {
+        if (!powerChar) return;
+        
+        // 誤操作防止の確認
+        if (!confirm("ハードウェアの電源を切りますか？\n（リトリガを停止し、約30秒後に完全にシャットダウンします）")) {
+            return;
+        }
+
+        try {
+            const data = new Uint8Array([0x00]); // 電源OFFコマンド
+            await powerChar.writeValue(data);
+            
+            // UI更新
+            document.getElementById('status').innerText = "Status: Shutting Down...";
+            document.getElementById('result').innerText = "OFF SIG";
+            document.getElementById('score').innerText = "Timer Started (30s)";
+            
+            // 全てのボタンを無効化（電源が切れるため）
+            document.querySelectorAll('button').forEach(btn => btn.disabled = true);
+            
+        } catch (error) {
+            console.error("Power off failed: " + error);
+            alert("Failed to send Power OFF command.");
+        }
+    }
+</script>
+</body>
+</html>
